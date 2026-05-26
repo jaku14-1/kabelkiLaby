@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>PLD – Logika sekwencyjna</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#f8fafc}</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState } = React;
+
+// ── Gray code ─────────────────────────────────────────────────────────────────
+const g4 = n => n ^ (n >> 1);
+const bit = (v, p) => (v >> p) & 1;
+const bits4 = v => [bit(v,3), bit(v,2), bit(v,1), bit(v,0)];
+const bits3 = v => [bit(v,2), bit(v,1), bit(v,0)];
+
+// ── Task 1 config ─────────────────────────────────────────────────────────────
+const T1V = [
+  { id:'W1', N:13, dir:'up',   desc:'mod-13, w górę (+1)' },
+  { id:'W2', N:11, dir:'down', desc:'mod-11, w dół (−1)' },
+  { id:'W3', N:14, dir:'up',   desc:'mod-14, w górę (+1)' },
+  { id:'W4', N:12, dir:'down', desc:'mod-12, w dół (−1)' },
+  { id:'W5', N:15, dir:'up',   desc:'mod-15, w górę (+1)' },
+  { id:'W6', N:14, dir:'down', desc:'mod-14, w dół (−1)' },
+];
+
+function buildT1(N, dir) {
+  const t = Array(16).fill(null);
+  for (let k = 0; k < N; k++) {
+    const curr = g4(k);
+    const nk = dir === 'up' ? (k+1)%N : (k-1+N)%N;
+    t[curr] = g4(nk);
+  }
+  return t;
+}
+
+// ── Task 2 config ─────────────────────────────────────────────────────────────
+const T2V = [
+  { id:'V1', v:1, desc:'A0=0: 2→3→4→5→2 ; A0=1: 7→6→5→4→3→7' },
+  { id:'V2', v:2, desc:'A0=0: 1→2→3→4→5→6→1 ; A0=1: rotacja prawo Q0Q2Q1' },
+  { id:'V3', v:3, desc:'A0=0: parzyste 0→2→4→6→0 ; A0=1: nieparzyste 1→3→5→7→1' },
+  { id:'V4', v:4, desc:'A0=0: 0→3→5→6→7→0 ; A0=1: hold' },
+  { id:'V5', v:5, desc:'A0=0: 6→5→4→3→2→1→6 ; A0=1: rotacja lewo Q1Q0Q2' },
+  { id:'V6', v:6, desc:'A0=0: 3→4→5→6→7→3 ; A0=1: w dół do 3, stop' },
+];
+
+function nextT2(v, a0, q) {
+  if (v===1) return a0===0?(q>=2&&q<=5?(q===5?2:q+1):2):(q>=3&&q<=7?(q===3?7:q-1):7);
+  if (v===2) {
+    if (a0===0) return q>=1&&q<=6?(q===6?1:q+1):1;
+    return (bit(q,0)<<2)|(bit(q,2)<<1)|bit(q,1);
+  }
+  if (v===3) return a0===0?(q%2?0:(q===6?0:q+2)):(q%2===0?1:(q===7?1:q+2));
+  if (v===4) {
+    if (a0===0){const s=[0,3,5,6,7],i=s.indexOf(q);return i<0?0:s[(i+1)%5];}
+    return q;
+  }
+  if (v===5) {
+    if (a0===0) return q>=1&&q<=6?(q===1?6:q-1):1;
+    return (bit(q,1)<<2)|(bit(q,0)<<1)|bit(q,2);
+  }
+  if (v===6) return a0===0?(q>=3&&q<=7?(q===7?3:q+1):3):(q<=3?3:q-1);
+  return 0;
+}
+
+function buildT2(v) {
+  return Array.from({length:16}, (_, i) => nextT2(v, (i>>3)&1, i&7));
+}
+
+// ── Quine-McCluskey ───────────────────────────────────────────────────────────
+function qmc(minterms, dontcares) {
+  if (!minterms.length) return [];
+  const dcSet = new Set(dontcares);
+  const all = [...new Set([...minterms, ...dontcares])];
+
+  let imps = all.map(m => ({ mask:0, val:m, mt:new Set([m]) }));
+  const primes = [];
+
+  while (imps.length) {
+    const used = new Set(), next = [], seen = new Set();
+    for (let i=0; i<imps.length; i++) for (let j=i+1; j<imps.length; j++) {
+      const a=imps[i], b=imps[j];
+      if (a.mask!==b.mask) continue;
+      const d=a.val^b.val;
+      if (!d||(d&(d-1))) continue;
+      used.add(i); used.add(j);
+      const nm=a.mask|d, nv=a.val&~d;
+      const key=`${nm}|${nv}`;
+      if (!seen.has(key)){seen.add(key); next.push({mask:nm, val:nv, mt:new Set([...a.mt,...b.mt])});}
+    }
+    for (let i=0; i<imps.length; i++) if (!used.has(i)) primes.push(imps[i]);
+    imps=next;
+  }
+
+  const valid=primes.filter(p=>[...p.mt].some(m=>!dcSet.has(m)));
+  if (!valid.length) return [];
+
+  const uncov=new Set(minterms), sel=[];
+  for (const m of minterms) {
+    const cov=valid.filter(p=>p.mt.has(m));
+    if (cov.length===1&&!sel.includes(cov[0])){
+      sel.push(cov[0]);
+      for (const c of cov[0].mt) uncov.delete(c);
+    }
+  }
+  while (uncov.size) {
+    let best=null,bc=0;
+    for (const p of valid){
+      if (sel.includes(p)) continue;
+      const c=[...uncov].filter(m=>p.mt.has(m)).length;
+      if (c>bc){best=p;bc=c;}
+    }
+    if (!best) break;
+    sel.push(best);
+    for (const c of best.mt) uncov.delete(c);
+  }
+  return sel;
+}
+
+function piStr(pi, vars) {
+  const n=vars.length;
+  if (pi.mask===(1<<n)-1) return '1';
+  const parts=[];
+  for (let i=n-1; i>=0; i--) {
+    if (!((pi.mask>>i)&1)) {
+      const vi=n-1-i;
+      parts.push(((pi.val>>i)&1)?vars[vi]:vars[vi]+"'");
+    }
+  }
+  return parts.join('·')||'1';
+}
+
+function computeOutputs(table, numBits, vars) {
+  const results=[];
+  for (let b=numBits-1; b>=0; b--) {
+    const mt=[], dc=[];
+    for (let i=0; i<table.length; i++) {
+      if (table[i]===null) dc.push(i);
+      else if ((table[i]>>b)&1) mt.push(i);
+    }
+    const primes=qmc(mt,dc);
+    const expr=primes.length===0?'0':primes.map(p=>piStr(p,vars)).join(' + ');
+    results.push({bit:b, label:`D${b}`, minterms:mt, dontcares:dc, primes, expr});
+  }
+  return results;
+}
+
+// ── K-map ─────────────────────────────────────────────────────────────────────
+const KO=[0,1,3,2];
+
+function KMap({table, bitIdx, label, rowLabel, colLabel}) {
+  const hdrs=['00','01','11','10'];
+  const getCell=(ri,ci)=>{
+    const idx=KO[ri]*4+KO[ci];
+    const v=table[idx];
+    if (v===null) return 'X';
+    return (v>>bitIdx)&1?'1':'0';
+  };
+  return (
+    <div style={{marginBottom:12}}>
+      <div style={{fontSize:11,fontWeight:700,marginBottom:3,color:'#4338ca',letterSpacing:.5}}>{label}</div>
+      <table style={{borderCollapse:'collapse',fontSize:12}}>
+        <thead>
+          <tr>
+            <th style={{padding:'3px 7px',border:'1px solid #c7d2fe',background:'#eef2ff',color:'#3730a3',fontSize:10,fontFamily:'monospace'}}>
+              {rowLabel}╲{colLabel}
+            </th>
+            {hdrs.map((h,i)=>(
+              <th key={i} style={{padding:'3px 10px',border:'1px solid #c7d2fe',background:'#eef2ff',color:'#3730a3',fontSize:10,fontFamily:'monospace'}}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {hdrs.map((rh,ri)=>(
+            <tr key={ri}>
+              <td style={{padding:'3px 7px',border:'1px solid #c7d2fe',background:'#eef2ff',fontWeight:700,fontSize:10,fontFamily:'monospace',color:'#3730a3'}}>{rh}</td>
+              {hdrs.map((_,ci)=>{
+                const v=getCell(ri,ci);
+                const bg=v==='1'?'#bbf7d0':v==='X'?'#fef9c3':'#fafafa';
+                const color=v==='1'?'#166534':v==='X'?'#92400e':'#9ca3af';
+                return (
+                  <td key={ci} style={{
+                    padding:'5px 12px',border:'1px solid #e5e7eb',textAlign:'center',
+                    background:bg,color,fontWeight:v==='1'?700:400,
+                    fontSize:13,fontFamily:'monospace',minWidth:30
+                  }}>{v}</td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── State tables ──────────────────────────────────────────────────────────────
+function T1StateTable({table, N}) {
+  const validSet=new Set(Array.from({length:N},(_,k)=>g4(k)));
+  const TH=({c})=><th style={{padding:'4px 8px',border:'1px solid #c7d2fe',background:'#eef2ff',color:'#3730a3',fontSize:11,fontFamily:'monospace',whiteSpace:'nowrap'}}>{c}</th>;
+  const TD=({c,dc,gray})=><td style={{padding:'3px 8px',border:'1px solid #e5e7eb',textAlign:'center',fontFamily:'monospace',fontSize:12,color:dc?'#dc2626':gray?'#6b7280':'inherit'}}>{c}</td>;
+  return (
+    <div style={{overflowX:'auto',marginBottom:16}}>
+      <table style={{borderCollapse:'collapse',fontSize:12}}>
+        <thead><tr>
+          <TH c="i"/><TH c="Q3"/><TH c="Q2"/><TH c="Q1"/><TH c="Q0"/>
+          <TH c="D3"/><TH c="D2"/><TH c="D1"/><TH c="D0"/>
+        </tr></thead>
+        <tbody>
+          {Array.from({length:16},(_,i)=>{
+            const [q3,q2,q1,q0]=bits4(i);
+            const next=table[i];
+            const valid=validSet.has(i);
+            const nd=next===null?['X','X','X','X']:bits4(next);
+            return (
+              <tr key={i} style={{background:valid?'#fff':'#fff7ed'}}>
+                <TD c={i} gray/><TD c={q3}/><TD c={q2}/><TD c={q1}/><TD c={q0}/>
+                <TD c={nd[0]} dc={!valid}/><TD c={nd[1]} dc={!valid}/><TD c={nd[2]} dc={!valid}/><TD c={nd[3]} dc={!valid}/>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{fontSize:10,color:'#b45309',marginTop:3}}>🟠 Tło pomarańczowe = stany nadmiarowe (don't care, X)</div>
+    </div>
+  );
+}
+
+function T2StateTable({table}) {
+  const TH=({c})=><th style={{padding:'4px 8px',border:'1px solid #bbf7d0',background:'#dcfce7',color:'#14532d',fontSize:11,fontFamily:'monospace'}}>{c}</th>;
+  const TD=({c,a0})=><td style={{padding:'3px 8px',border:'1px solid #e5e7eb',textAlign:'center',fontFamily:'monospace',fontSize:12,fontWeight:a0?600:400}}>{c}</td>;
+  return (
+    <div style={{overflowX:'auto',marginBottom:16}}>
+      <table style={{borderCollapse:'collapse',fontSize:12}}>
+        <thead><tr>
+          <TH c="A0"/><TH c="Q2"/><TH c="Q1"/><TH c="Q0"/>
+          <TH c="D2"/><TH c="D1"/><TH c="D0"/>
+        </tr></thead>
+        <tbody>
+          {Array.from({length:16},(_,i)=>{
+            const a0=(i>>3)&1, q=i&7;
+            const [q2,q1,q0]=bits3(q);
+            const [d2,d1,d0]=bits3(table[i]);
+            return (
+              <tr key={i} style={{background:a0?'#f0fdf4':'#fff'}}>
+                <TD c={a0} a0={a0}/><TD c={q2}/><TD c={q1}/><TD c={q0}/>
+                <TD c={d2}/><TD c={d1}/><TD c={d0}/>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{fontSize:10,color:'#15803d',marginTop:3}}>🟢 Tło zielone = A0=1 (tryb 2)</div>
+    </div>
+  );
+}
+
+// ── SOP display ───────────────────────────────────────────────────────────────
+function SOPBlock({outputs, color}) {
+  return (
+    <div style={{background:color==='blue'?'#eef2ff':'#f0fdf4',borderRadius:8,padding:'12px 14px',fontFamily:'monospace',fontSize:13,border:`1px solid ${color==='blue'?'#c7d2fe':'#bbf7d0'}`}}>
+      {outputs.map(o=>(
+        <div key={o.bit} style={{marginBottom:5,lineHeight:1.6}}>
+          <span style={{color:color==='blue'?'#3730a3':'#14532d',fontWeight:700}}>{o.label} = </span>
+          <span style={{color:'#111827'}}>{o.expr}</span>
+          <span style={{color:'#9ca3af',fontSize:10,marginLeft:8}}>
+            [Σm({o.minterms.join(',') || '∅'}){o.dontcares?.length?` + d(${o.dontcares.join(',')})`:''} ]
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Variant panels ────────────────────────────────────────────────────────────
+function T1Variant({cfg}) {
+  const table=buildT1(cfg.N, cfg.dir);
+  const vars=['Q3','Q2','Q1','Q0'];
+  const outputs=computeOutputs(table, 4, vars);
+
+  const [tab,setTab]=useState('table');
+  const tabs=[{k:'table',label:'Tabela stanów'},{k:'kmap',label:'Mapy Karnaugha'},{k:'sop',label:'Wyrażenia SOP'}];
+
+  return (
+    <div>
+      <div style={{display:'flex',gap:4,marginBottom:12,borderBottom:'2px solid #c7d2fe',paddingBottom:0}}>
+        {tabs.map(t=>(
+          <button key={t.k} onClick={()=>setTab(t.k)} style={{
+            padding:'5px 12px',border:'none',cursor:'pointer',fontSize:12,fontWeight:tab===t.k?700:400,
+            background:tab===t.k?'#4f46e5':'transparent',color:tab===t.k?'#fff':'#6b7280',
+            borderRadius:'6px 6px 0 0',transition:'all .15s'
+          }}>{t.label}</button>
+        ))}
+      </div>
+      {tab==='table' && <T1StateTable table={table} N={cfg.N}/>}
+      {tab==='kmap' && (
+        <div style={{display:'flex',flexWrap:'wrap',gap:20}}>
+          {outputs.map(o=><KMap key={o.bit} table={table} bitIdx={o.bit} label={o.label} rowLabel="Q3Q2" colLabel="Q1Q0"/>)}
+        </div>
+      )}
+      {tab==='sop' && <SOPBlock outputs={outputs} color="blue"/>}
+    </div>
+  );
+}
+
+function T2Variant({cfg}) {
+  const table=buildT2(cfg.v);
+  const vars=['A0','Q2','Q1','Q0'];
+  const outputs=computeOutputs(table, 3, vars);
+
+  const [tab,setTab]=useState('table');
+  const tabs=[{k:'table',label:'Tabela stanów'},{k:'kmap',label:'Mapy Karnaugha'},{k:'sop',label:'Wyrażenia SOP'}];
+
+  return (
+    <div>
+      <div style={{display:'flex',gap:4,marginBottom:12,borderBottom:'2px solid #bbf7d0',paddingBottom:0}}>
+        {tabs.map(t=>(
+          <button key={t.k} onClick={()=>setTab(t.k)} style={{
+            padding:'5px 12px',border:'none',cursor:'pointer',fontSize:12,fontWeight:tab===t.k?700:400,
+            background:tab===t.k?'#16a34a':'transparent',color:tab===t.k?'#fff':'#6b7280',
+            borderRadius:'6px 6px 0 0',transition:'all .15s'
+          }}>{t.label}</button>
+        ))}
+      </div>
+      {tab==='table' && <T2StateTable table={table}/>}
+      {tab==='kmap' && (
+        <div style={{display:'flex',flexWrap:'wrap',gap:20}}>
+          {outputs.map(o=><KMap key={o.bit} table={table} bitIdx={o.bit} label={o.label} rowLabel="A0·Q2" colLabel="Q1Q0"/>)}
+        </div>
+      )}
+      {tab==='sop' && <SOPBlock outputs={outputs} color="green"/>}
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [task, setTask]=useState(1);
+  const [vi, setVi]=useState(0);
+
+  const variants=task===1?T1V:T2V;
+  const cur=variants[vi];
+
+  return (
+    <div style={{fontFamily:"'Courier New',monospace",maxWidth:820,margin:'0 auto',padding:16,background:'#f8fafc',minHeight:'100vh'}}>
+      {/* Header */}
+      <div style={{background:'linear-gradient(135deg,#1e1b4b 0%,#312e81 100%)',borderRadius:10,padding:'14px 18px',marginBottom:16,boxShadow:'0 4px 15px rgba(30,27,75,.3)'}}>
+        <div style={{color:'#a5b4fc',fontSize:10,letterSpacing:2,textTransform:'uppercase',marginBottom:2}}>Laboratorium KOiDC · C-4</div>
+        <div style={{color:'#fff',fontSize:18,fontWeight:700}}>PLD — Logika sekwencyjna</div>
+        <div style={{color:'#818cf8',fontSize:11,marginTop:2}}>Wszystkie 12 wariantów · Quine-McCluskey · Minimalne SOP · Mapy Karnaugha</div>
+      </div>
+
+      {/* Task selector */}
+      <div style={{display:'flex',gap:8,marginBottom:12}}>
+        {[1,2].map(t=>(
+          <button key={t} onClick={()=>{setTask(t);setVi(0);}} style={{
+            flex:1,padding:'8px 0',border:'none',cursor:'pointer',borderRadius:8,fontSize:13,fontWeight:700,
+            background:task===t?(t===1?'#4f46e5':'#16a34a'):'#e2e8f0',
+            color:task===t?'#fff':'#64748b',transition:'all .2s',
+            boxShadow:task===t?'0 2px 8px rgba(0,0,0,.2)':'none'
+          }}>
+            {t===1?'Zad. 1 – Licznik Gray mod-N':'Zad. 2 – Licznik binarny z A0'}
+          </button>
+        ))}
+      </div>
+
+      {/* Variant selector */}
+      <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+        {variants.map((v,i)=>(
+          <button key={i} onClick={()=>setVi(i)} style={{
+            padding:'5px 14px',border:`2px solid ${vi===i?(task===1?'#4f46e5':'#16a34a'):'#cbd5e1'}`,
+            borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:vi===i?700:400,
+            background:vi===i?(task===1?'#eef2ff':'#f0fdf4'):'#fff',
+            color:vi===i?(task===1?'#3730a3':'#14532d'):'#475569',transition:'all .15s'
+          }}>{v.id}</button>
+        ))}
+      </div>
+
+      {/* Description badge */}
+      <div style={{
+        background:task===1?'#eef2ff':'#f0fdf4',
+        border:`1px solid ${task===1?'#c7d2fe':'#bbf7d0'}`,
+        borderRadius:6,padding:'6px 12px',marginBottom:12,
+        fontSize:12,color:task===1?'#3730a3':'#14532d',fontWeight:600
+      }}>
+        {cur.id}: {cur.desc}
+      </div>
+
+      {/* Content */}
+      <div style={{background:'#fff',borderRadius:10,padding:16,border:'1px solid #e2e8f0',boxShadow:'0 1px 4px rgba(0,0,0,.05)'}}>
+        {task===1 ? <T1Variant key={cur.id} cfg={cur}/> : <T2Variant key={cur.id} cfg={cur}/>}
+      </div>
+
+      {/* Legend */}
+      <div style={{marginTop:12,padding:'8px 12px',background:'#f1f5f9',borderRadius:6,fontSize:10,color:'#64748b',display:'flex',gap:16,flexWrap:'wrap'}}>
+        <span><span style={{color:'#166534',fontWeight:700}}>■</span> 1 = jedynka</span>
+        <span><span style={{color:'#92400e',fontWeight:700}}>■</span> X = don't care</span>
+        <span><span style={{color:'#9ca3af'}}>■</span> 0 = zero</span>
+        <span style={{marginLeft:'auto'}}>Notacja: A' = negacja A, A·B = iloczyn, A + B = suma</span>
+      </div>
+    </div>
+  );
+}
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
